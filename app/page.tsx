@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { ITEMS, RARITY_COLOR, RARITY_LABEL, RARITY_WEIGHT, Item, Rarity } from "@/lib/items";
+import { FURNITURE, ITEMS, RARITY_COLOR, RARITY_LABEL, RARITY_ORDER, RARITY_WEIGHT, WEAPONS, Item, Rarity } from "@/lib/items";
 import { cloudLoad, cloudSave } from "@/lib/supabase";
 import BattlePanel, { BattleResult } from "@/components/BattlePanel";
 
@@ -11,9 +11,12 @@ const House3D = dynamic(() => import("@/components/House3D"), {
   loading: () => <div className="flex h-[440px] items-center justify-center rounded-lg border-4 border-[#3e2723] bg-[#87ceeb] font-black">🏠 집을 짓는 중…</div>,
 });
 
-const COST_ONE = 20;
-const COST_TEN = 180;
-const MISS_RATE = 0.25;
+type BannerId = "furniture" | "weapon" | "special";
+const BANNERS: { id: BannerId; title: string; emoji: string; costOne: number; costTen: number | null; miss: number; color: string; desc: string }[] = [
+  { id: "furniture", title: "가구 뽑기", emoji: "🏠", costOne: 20, costTen: 180, miss: 0.25, color: "#66bb4a", desc: "가구·도구·보물 24종" },
+  { id: "weapon", title: "무기 뽑기", emoji: "⚔️", costOne: 30, costTen: 270, miss: 0.2, color: "#e53935", desc: "무기 12종 — 배틀 공격력이 올라가요!" },
+  { id: "special", title: "스페셜 뽑기", emoji: "✨", costOne: 60, costTen: null, miss: 0, color: "#ab47bc", desc: "꽝 없음! 최소 희귀 보장, 신화·전설 확률 3배!" },
+];
 const SHARD_COST = 5;
 const LS_KEY = "gacha-house-save-v2";
 const LS_PROFILE = "gacha-house-profile-v1";
@@ -38,10 +41,9 @@ interface SaveState {
 
 const INITIAL: SaveState = { coins: 100, shards: 0, tickets: 0, inventory: {}, totalDraws: 0, missStreak: 0, battleWins: 0 };
 
-function rollRarity(minRarity?: Rarity): Rarity {
-  const order: Rarity[] = ["common", "rare", "epic", "legend"];
-  let pool = order.map((r) => ({ r, w: RARITY_WEIGHT[r] }));
-  if (minRarity) pool = pool.filter((p) => order.indexOf(p.r) >= order.indexOf(minRarity));
+function rollRarity(minRarity?: Rarity, boost?: Partial<Record<Rarity, number>>): Rarity {
+  let pool = RARITY_ORDER.map((r) => ({ r, w: RARITY_WEIGHT[r] * (boost?.[r] ?? 1) }));
+  if (minRarity) pool = pool.filter((p) => RARITY_ORDER.indexOf(p.r) >= RARITY_ORDER.indexOf(minRarity));
   const total = pool.reduce((s, p) => s + p.w, 0);
   let roll = Math.random() * total;
   for (const p of pool) {
@@ -51,9 +53,16 @@ function rollRarity(minRarity?: Rarity): Rarity {
   return pool[pool.length - 1].r;
 }
 
-function rollItem(minRarity?: Rarity): Item {
-  const rarity = rollRarity(minRarity);
-  const candidates = ITEMS.filter((i) => i.rarity === rarity);
+function rollItem(poolItems: Item[] = ITEMS, minRarity?: Rarity, boost?: Partial<Record<Rarity, number>>): Item {
+  let rarity = rollRarity(minRarity, boost);
+  let candidates = poolItems.filter((i) => i.rarity === rarity);
+  if (!candidates.length) {
+    // 풀에 없는 등급이면 전체에서 해당 등급으로 재추첨
+    rarity = rollRarity(minRarity, boost);
+    candidates = poolItems.length ? poolItems : ITEMS;
+    const filtered = candidates.filter((i) => i.rarity === rarity);
+    if (filtered.length) candidates = filtered;
+  }
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
@@ -110,14 +119,15 @@ export default function Home() {
     setTimeout(() => setToast(""), 3000);
   }
 
-  /** 일반 뽑기 묶음 실행 */
-  function runDraws(count: number, state: SaveState): { results: DrawResult[]; next: SaveState } {
+  /** 배너 뽑기 묶음 실행 */
+  function runDraws(count: number, state: SaveState, banner: (typeof BANNERS)[number]): { results: DrawResult[]; next: SaveState } {
+    const pool = banner.id === "weapon" ? WEAPONS : banner.id === "furniture" ? FURNITURE : ITEMS;
     const next: SaveState = { ...state, inventory: { ...state.inventory } };
     const out: DrawResult[] = [];
     for (let i = 0; i < count; i++) {
       const isLastOfTen = count === 10 && i === count - 1;
       const guaranteed = next.missStreak >= 2 || isLastOfTen;
-      const miss = !guaranteed && Math.random() < MISS_RATE;
+      const miss = !guaranteed && Math.random() < banner.miss;
       next.totalDraws += 1;
       if (miss) {
         next.missStreak += 1;
@@ -126,10 +136,13 @@ export default function Home() {
         continue;
       }
       next.missStreak = 0;
-      const item = rollItem(isLastOfTen ? "rare" : undefined);
+      const item =
+        banner.id === "special"
+          ? rollItem(pool, "rare", { mythic: 3, legend: 3 })
+          : rollItem(pool, isLastOfTen ? "rare" : undefined);
       const had = (next.inventory[item.id] ?? 0) > 0;
       if (had) {
-        const shardGain = item.rarity === "legend" ? 3 : 1;
+        const shardGain = item.rarity === "legend" ? 3 : item.rarity === "mythic" ? 2 : 1;
         next.shards += shardGain;
         out.push({ item, isNew: false, isDup: true, guaranteed, special: `⭐별조각 +${shardGain}` });
       } else {
@@ -149,16 +162,20 @@ export default function Home() {
       const unowned = ITEMS.filter((i) => (next.inventory[i.id] ?? 0) <= 0);
       if (unowned.length > 0) {
         // 아직 없는 물건 중에서 등급 가중치로 추첨
-        const weighted: Item[] = [];
-        for (const it of unowned) for (let w = 0; w < RARITY_WEIGHT[it.rarity]; w++) weighted.push(it);
-        const item = weighted[Math.floor(Math.random() * weighted.length)];
+        const totalW = unowned.reduce((s, it) => s + RARITY_WEIGHT[it.rarity], 0);
+        let roll = Math.random() * totalW;
+        let item = unowned[unowned.length - 1];
+        for (const it of unowned) {
+          roll -= RARITY_WEIGHT[it.rarity];
+          if (roll <= 0) { item = it; break; }
+        }
         next.inventory[item.id] = 1;
         return { results: [{ item, isNew: true, isDup: false, guaranteed: true, special: "⭐ 확정 뽑기!" }], next };
       }
       next.coins += 100;
       return { results: [{ item: null, isNew: false, isDup: false, special: "전부 모았어요! 대신 🪙100" }], next };
     }
-    const item = rollItem("rare");
+    const item = rollItem(ITEMS, "rare");
     const had = (next.inventory[item.id] ?? 0) > 0;
     if (had) {
       next.shards += 2;
@@ -178,26 +195,29 @@ export default function Home() {
       setResults(r);
       setPhase("reveal");
       busyRef.current = false;
-      const best = r.filter((x) => x.item).sort((a, b) => {
-        const order: Rarity[] = ["common", "rare", "epic", "legend"];
-        return order.indexOf(b.item!.rarity) - order.indexOf(a.item!.rarity);
-      })[0];
+      const best = r.filter((x) => x.item).sort((a, b) => RARITY_ORDER.indexOf(b.item!.rarity) - RARITY_ORDER.indexOf(a.item!.rarity))[0];
       if (best?.item?.rarity === "legend") { beep(523, 130); beep(659, 130, 140); beep(784, 130, 280); beep(1047, 260, 420); }
+      else if (best?.item?.rarity === "mythic") { beep(440, 120); beep(587, 120, 130); beep(880, 240, 260); }
       else if (best?.item?.rarity === "epic") { beep(523, 120); beep(659, 120, 130); beep(784, 220, 260); }
       else if (best?.item) beep(660, 160);
       else beep(220, 200);
     }, 1500);
   }
 
+  const [bannerId, setBannerId] = useState<BannerId>("furniture");
+  const banner = BANNERS.find((b) => b.id === bannerId)!;
+
   function draw(count: 1 | 10) {
     if (busyRef.current || phase !== "idle") return;
-    const cost = count === 1 ? COST_ONE : COST_TEN;
+    const b = banner;
+    if (count === 10 && b.costTen === null) return;
+    const cost = count === 1 ? b.costOne : b.costTen!;
     if (save.coins < cost) {
       showToast("코인이 부족해요! 옆의 ⚔️배틀에서 이기면 코인을 듬뿍 받아요!");
       beep(180, 150);
       return;
     }
-    animateAndReveal((s) => runDraws(count, s), { ...save, coins: save.coins - cost });
+    animateAndReveal((s) => runDraws(count, s, b), { ...save, coins: save.coins - cost });
   }
 
   function drawTicket() {
@@ -214,12 +234,12 @@ export default function Home() {
     setSave((s) => ({
       ...s,
       coins: s.coins + r.coins,
-      tickets: s.tickets + (r.ticket ? 1 : 0),
+      tickets: s.tickets + r.tickets,
       battleWins: s.battleWins + (r.win ? 1 : 0),
     }));
     showToast(
       r.win
-        ? `⚔️ ${r.monsterName} 승리! 🪙${r.coins}${r.ticket ? " + 🎫보너스 뽑기권" : ""}`
+        ? `⚔️ ${r.monsterName} 승리! 🪙${r.coins}${r.tickets ? ` + 🎫뽑기권 ${r.tickets}장` : ""}`
         : `${r.monsterName}에게 졌어요… 위로 코인 🪙${r.coins}`
     );
   }
@@ -256,10 +276,7 @@ export default function Home() {
     showToast("새 게임이 시작됐어요!");
   }
 
-  const bestReveal = results.filter((x) => x.item).sort((a, b) => {
-    const order: Rarity[] = ["common", "rare", "epic", "legend"];
-    return order.indexOf(b.item!.rarity) - order.indexOf(a.item!.rarity);
-  })[0];
+  const bestReveal = results.filter((x) => x.item).sort((a, b) => RARITY_ORDER.indexOf(b.item!.rarity) - RARITY_ORDER.indexOf(a.item!.rarity))[0];
   const revealColor = bestReveal?.item ? RARITY_COLOR[bestReveal.item.rarity] : "#78909c";
 
   return (
@@ -304,13 +321,29 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap justify-center gap-3">
-            <button onClick={() => draw(1)} disabled={phase !== "idle"} className="pixel-btn rounded-lg bg-[#66bb4a] px-6 py-3 text-xl font-black text-white">
-              🎁 1회 뽑기 (🪙{COST_ONE})
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
+            {BANNERS.map((b) => (
+              <button
+                key={b.id}
+                onClick={() => setBannerId(b.id)}
+                className="pixel-btn rounded-lg px-4 py-2 font-black text-white"
+                style={{ background: b.color, opacity: bannerId === b.id ? 1 : 0.45, outline: bannerId === b.id ? "3px solid #3e2723" : "none" }}
+              >
+                {b.emoji} {b.title}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 font-black text-[#6d4c41]">{banner.emoji} {banner.title} — {banner.desc}</p>
+
+          <div className="mt-3 flex flex-wrap justify-center gap-3">
+            <button onClick={() => draw(1)} disabled={phase !== "idle"} className="pixel-btn rounded-lg px-6 py-3 text-xl font-black text-white" style={{ background: banner.color }}>
+              🎁 1회 뽑기 (🪙{banner.costOne})
             </button>
-            <button onClick={() => draw(10)} disabled={phase !== "idle"} className="pixel-btn rounded-lg bg-[#fb8c00] px-6 py-3 text-xl font-black text-white">
-              🎁 10회 뽑기 (🪙{COST_TEN})
-            </button>
+            {banner.costTen !== null && (
+              <button onClick={() => draw(10)} disabled={phase !== "idle"} className="pixel-btn rounded-lg bg-[#fb8c00] px-6 py-3 text-xl font-black text-white">
+                🎁 10회 뽑기 (🪙{banner.costTen})
+              </button>
+            )}
           </div>
           <div className="mt-3 flex flex-wrap justify-center gap-2">
             <button onClick={drawTicket} disabled={phase !== "idle" || save.tickets <= 0} className="pixel-btn rounded-lg bg-[#ab47bc] px-4 py-2 font-black text-white">
@@ -321,8 +354,8 @@ export default function Home() {
             </button>
           </div>
           <p className="mt-3 text-sm font-bold leading-6 text-[#6d4c41]">
-            쿠키런처럼 중복이 나오면 ⭐별조각으로 쌓여요. 별조각 5개면 아직 없는 물건을 확정으로 뽑아요!<br />
-            가끔 빈 캡슐(꽝)도 나와요 — 위로 코인 5개, 3연속 꽝은 절대 없어요. 코인이 부족하면 옆의 ⚔️배틀에서 벌어오세요!
+            등급은 5단계: 일반 · 희귀 · 에픽 · 신화 · 전설! 중복이 나오면 ⭐별조각으로 쌓이고, 별조각 5개면 아직 없는 물건을 확정으로 뽑아요.<br />
+            뽑은 무기는 배틀에서 자동 장착되고, 3D 집의 무기 벽에 걸려요. 코인이 부족하면 옆의 ⚔️배틀에서 벌어오세요!
           </p>
         </section>
 
@@ -348,7 +381,7 @@ export default function Home() {
               <div key={item.id} className="rounded-lg border-2 p-2 text-center" style={{ borderColor: owned ? RARITY_COLOR[item.rarity] : "#ddd" }}>
                 <div className={`text-3xl ${owned ? "" : "slot-empty"}`}>{owned ? item.emoji : "❓"}</div>
                 <div className="mt-0.5 truncate text-[11px] font-black">{owned ? item.name : "???"}</div>
-                <div className="text-[10px] font-bold" style={{ color: RARITY_COLOR[item.rarity] }}>{RARITY_LABEL[item.rarity]}</div>
+                <div className="text-[10px] font-bold" style={{ color: RARITY_COLOR[item.rarity] }}>{RARITY_LABEL[item.rarity]}{item.power ? ` · ⚔️+${item.power}` : ""}</div>
               </div>
             );
           })}
@@ -370,7 +403,7 @@ export default function Home() {
       </section>
 
       <footer className="mt-6 text-center text-sm font-bold text-[#2e5b1e]">
-        전설 등급 확률은 5%! 드래곤 알을 뽑으면 대단한 행운이에요 🐉 보스 크리퍼를 이기면 보너스 뽑기권!
+        신화·전설은 아주 희귀해요! 최종보스 엔더 드래곤을 이기면 뽑기권 2장 🐉 전설 무기 엑스칼리버를 노려보세요!
       </footer>
 
       {/* ── 쿠키런식 뽑기 연출 오버레이 ── */}
@@ -387,7 +420,7 @@ export default function Home() {
             <div className="relative w-full max-w-2xl py-6 text-center">
               <div className="rays pointer-events-none absolute left-1/2 top-24 h-[420px] w-[420px] -translate-x-1/2 rounded-full opacity-70" style={{ background: `repeating-conic-gradient(from 0deg, ${revealColor}55 0deg 10deg, transparent 10deg 24deg)` }} />
               <h2 className="pop-in relative text-4xl font-black text-white drop-shadow-[3px_3px_0_rgba(0,0,0,0.6)]">
-                {bestReveal?.item?.rarity === "legend" ? "🎉 전설이다!! 🎉" : bestReveal?.item?.rarity === "epic" ? "✨ 슈퍼희귀!! ✨" : bestReveal ? "🎊 뽑기 결과 🎊" : "🥚💨 앗, 빈 캡슐…"}
+                {bestReveal?.item?.rarity === "legend" ? "🎉 전설이다!! 🎉" : bestReveal?.item?.rarity === "mythic" ? "🔥 신화 등급!! 🔥" : bestReveal?.item?.rarity === "epic" ? "✨ 에픽이다!! ✨" : bestReveal ? "🎊 뽑기 결과 🎊" : "🥚💨 앗, 빈 캡슐…"}
               </h2>
               <div className={`relative mt-5 grid gap-3 ${results.length > 1 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-1 place-items-center"}`}>
                 {results.map((r, i) =>
@@ -414,7 +447,7 @@ export default function Home() {
               </div>
               {results.length > 1 && (
                 <p className="relative mt-4 font-black text-white">
-                  🆕 새 물건 {results.filter((r) => r.isNew).length}개 · ⭐별조각 {results.reduce((s, r) => s + (r.isDup ? (r.item?.rarity === "legend" ? 3 : 1) : 0), 0)}개 · 꽝 {results.filter((r) => !r.item).length}개
+                  🆕 새 물건 {results.filter((r) => r.isNew).length}개 · ⭐별조각 {results.reduce((s, r) => s + (r.isDup ? (r.item?.rarity === "legend" ? 3 : r.item?.rarity === "mythic" ? 2 : 1) : 0), 0)}개 · 꽝 {results.filter((r) => !r.item).length}개
                 </p>
               )}
               <button onClick={() => setPhase("idle")} className="pixel-btn relative mt-5 rounded-lg bg-[#66bb4a] px-8 py-3 text-xl font-black text-white">확인 👍</button>

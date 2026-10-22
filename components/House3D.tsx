@@ -11,7 +11,18 @@ type Box = [number, number, number, string, number, number, number, number?];
 interface ModelSpec {
   pos: [number, number]; // x, z
   rotY?: number;
+  /** 바닥에서 띄우는 높이 (벽에 거는 무기용) */
+  lift?: number;
   boxes: Box[];
+}
+
+/** 무기 공통 골격: [손잡이, 자루, 날] 색상만 바꿔요 */
+function weaponBoxes(blade: string, guard = "#ffd54f"): Box[] {
+  return [
+    [0.09, 0.3, 0.09, "#5d4037", 0, 0.15, 0],
+    [0.3, 0.07, 0.1, guard, 0, 0.33, 0],
+    [0.17, 0.72, 0.05, blade, 0, 0.72, 0],
+  ];
 }
 
 const MODELS: Record<string, ModelSpec> = {
@@ -42,6 +53,19 @@ const MODELS: Record<string, ModelSpec> = {
   tree: { pos: [4.3, -0.8], boxes: [[0.38, 1.15, 0.38, "#6d4c41", 0, 0.57, 0], [1.55, 1.15, 1.55, "#43a047", 0, 1.7, 0], [1.1, 0.8, 1.1, "#66bb4a", 0, 2.55, 0]] },
   tent: { pos: [2.7, 1.4], rotY: -0.4, boxes: [[1.5, 0.95, 1.25, "#ff7043", 0, 0.47, 0], [1.6, 0.16, 0.34, "#f4511e", 0, 1.0, 0], [0.6, 0.65, 0.06, "#4e342e", 0, 0.35, 0.64]] },
   enchant: { pos: [4.7, 2.0], boxes: [[0.95, 0.78, 0.95, "#5d4037", 0, 0.39, 0], [0.62, 0.14, 0.46, "#f5f5f5", 0, 0.88, 0], [0.16, 0.3, 0.16, "#4dd0e1", -0.55, 0.55, 0.3], [0.16, 0.3, 0.16, "#4dd0e1", 0.55, 0.55, -0.3]] },
+  // ── 무기 벽 (뒷벽에 걸기) ──
+  woodsword: { pos: [-5.75, -4.52], lift: 1.05, boxes: weaponBoxes("#a1887f") },
+  stonesword: { pos: [-5.28, -4.52], lift: 1.05, boxes: weaponBoxes("#9e9e9e") },
+  woodbow: { pos: [-4.81, -4.52], lift: 1.05, boxes: [[0.08, 0.95, 0.08, "#8d6e63", 0, 0.5, 0], [0.04, 0.9, 0.04, "#f5f5f5", 0.12, 0.5, 0], [0.3, 0.05, 0.05, "#a1887f", 0.05, 0.55, 0]] },
+  ironsword: { pos: [-4.34, -4.52], lift: 1.05, boxes: weaponBoxes("#cfd8dc") },
+  ironaxe: { pos: [-3.87, -4.52], lift: 1.05, boxes: [[0.09, 0.85, 0.09, "#6d4c41", 0, 0.42, 0], [0.4, 0.34, 0.06, "#b0bec5", 0.12, 0.78, 0]] },
+  goldbow: { pos: [-3.4, -4.52], lift: 1.05, boxes: [[0.08, 0.95, 0.08, "#ffd54f", 0, 0.5, 0], [0.04, 0.9, 0.04, "#ffffff", 0.12, 0.5, 0], [0.3, 0.05, 0.05, "#ffb300", 0.05, 0.55, 0]] },
+  diasword: { pos: [-2.93, -4.52], lift: 1.05, boxes: weaponBoxes("#4dd0e1", "#ffd54f") },
+  trident: { pos: [-2.46, -4.52], lift: 1.05, boxes: [[0.08, 0.85, 0.08, "#26a69a", 0, 0.42, 0], [0.07, 0.3, 0.07, "#4dd0e1", -0.14, 0.95, 0], [0.07, 0.38, 0.07, "#4dd0e1", 0, 1.0, 0], [0.07, 0.3, 0.07, "#4dd0e1", 0.14, 0.95, 0]] },
+  netherite: { pos: [-1.99, -4.52], lift: 1.05, boxes: weaponBoxes("#4e342e", "#e53935") },
+  magicwand: { pos: [-1.52, -4.52], lift: 1.05, boxes: [[0.08, 0.8, 0.08, "#6a1b9a", 0, 0.4, 0], [0.24, 0.24, 0.24, "#ffee58", 0, 0.92, 0]] },
+  dragonslayer: { pos: [-1.05, -4.52], lift: 1.05, boxes: weaponBoxes("#66bb4a", "#e53935") },
+  excalibur: { pos: [-0.58, -4.52], lift: 1.05, boxes: weaponBoxes("#fff59d", "#ffb300") },
 };
 
 function emojiSprite(emoji: string): THREE.Sprite {
@@ -161,7 +185,7 @@ export default function House3D({ inventory }: { inventory: Record<string, numbe
       const sprite = emojiSprite(item.emoji);
       sprite.position.set(0, topY + 0.75, 0);
       g.add(sprite);
-      g.position.set(spec.pos[0], 0.18, spec.pos[1]);
+      g.position.set(spec.pos[0], 0.18 + (spec.lift ?? 0), spec.pos[1]);
       if (spec.rotY) g.rotation.y = spec.rotY;
       scene.add(g);
     }
