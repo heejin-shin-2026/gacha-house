@@ -86,3 +86,14 @@ body {
 .bounce-soft { animation: bounce-soft 1.6s ease-in-out infinite; }
 
 .slot-empty { filter: grayscale(1); opacity: 0.22; }
+
+@keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.rays {
+  background: repeating-conic-gradient(from 0deg, rgba(255,255,255,0.22) 0deg 10deg, transparent 10deg 24deg);
+  animation: spin-slow 14s linear infinite;
+}
+@keyframes glow-pulse {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.07); filter: brightness(1.35); }
+}
+.glow-pulse { animation: glow-pulse 0.9s ease-in-out infinite; }
