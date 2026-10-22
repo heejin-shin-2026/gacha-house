@@ -50,12 +50,23 @@ export async function cloudSave(name: string, code: string, data: SaveData): Pro
 export async function cloudLoad(name: string, code: string): Promise<SaveData | null> {
   const sb = supabase();
   if (!sb) return null;
-  const { data, error } = await sb
+  let { data, error } = await sb
     .from("gacha_saves")
     .select("coins, shards, tickets, battle_wins, inventory, total_draws")
     .eq("player_name", name)
     .eq("player_code", code)
     .maybeSingle();
+  if (error) {
+    // 확장 컬럼이 아직 없으면 구 스키마로 재시도
+    const retry = await sb
+      .from("gacha_saves")
+      .select("coins, inventory, total_draws")
+      .eq("player_name", name)
+      .eq("player_code", code)
+      .maybeSingle();
+    data = retry.data as typeof data;
+    error = retry.error;
+  }
   if (error || !data) return null;
   return {
     coins: data.coins,
